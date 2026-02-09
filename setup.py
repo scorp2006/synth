@@ -52,6 +52,7 @@ Time: 5-15 minutes depending on internet speed
     # Step 2: Download models
     print("\n" + "#" * 60)
     print("# STEP 2: DOWNLOADING GAN MODELS")
+    print("# USING UPDATED DOWNLOADER (Google Drive / Official Repo)")
     print("#" * 60)
     if not run_script("download_models.py"):
         print("WARNING: Model download may have had issues")

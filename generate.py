@@ -171,6 +171,11 @@ class WeatherGenerator:
 
         with torch.no_grad():
             output = self.models[effect_name](image_tensor)
+            
+            # Resize output to match input (fixes dimension mismatch errors)
+            if output.shape[-2:] != image_tensor.shape[-2:]:
+                output = F.interpolate(output, size=image_tensor.shape[-2:], mode='bilinear', align_corners=False)
+                
             result = (1 - blend) * image_tensor + blend * output
             result = torch.clamp(result, -1, 1)
 
@@ -246,8 +251,62 @@ class WeatherGenerator:
         img_array = (tensor.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
         result_pil = Image.fromarray(img_array)
 
-        # Apply low-light/darkness effect (this adds the "lowlight" and "night" parts)
-        result_pil = self.apply_low_light(result_pil, darkness)
+        # ------------------------------------------------------------------
+        # ALGORITHMIC WEATHER EFFECTS (Post-Processing)
+        # Because we're using a single base GAN (Fog), we add other effects
+        # algorithmically to ensuring they look distinct and realistic.
+        # ------------------------------------------------------------------
+
+        # 1. Add Rain Effects (if condition is rain)
+        if condition == 'rain_lowlight':
+             # Create rain streaks
+            import cv2
+            img_np = np.array(result_pil)
+            height, width = img_np.shape[:2]
+            
+            # Rain density based on severity
+            density = {'light': 0.05, 'medium': 0.1, 'heavy': 0.2}[severity]
+            
+            # Draw streaks
+            noise = np.random.rand(height, width)
+            rain_mask = noise < density
+            
+            # Apply streaks (motion blur style)
+            # Simple gray streaks
+            streak_color = 200 # Bright gray
+            
+            # Add Gaussian noise for texture
+            noise_layer = np.random.normal(0, 25, (height, width, 3)).astype(np.uint8)
+            img_with_noise = cv2.addWeighted(img_np, 0.9, noise_layer, 0.1, 0)
+            
+            # Add rain streaks (lines)
+            num_streaks = int(width * height * density * 0.01)
+            for _ in range(num_streaks):
+                x = np.random.randint(0, width)
+                y = np.random.randint(0, height)
+                l = np.random.randint(5, 15)
+                cv2.line(img_np, (x, y), (x-2, y+l), (200, 200, 200), 1)
+                
+            result_pil = Image.fromarray(img_np)
+
+        # 2. Add Night/Low-Light Effects
+        target_darkness = darkness
+        if condition == 'fog_night':
+             # Night is darker than just low-light
+             target_darkness += 0.1
+             
+        # Apply darkness
+        enhancer = ImageEnhance.Brightness(result_pil)
+        result_pil = enhancer.enhance(1.0 - target_darkness)
+        
+        # Apply blue tint for night look
+        img_array = np.array(result_pil).astype(np.float32)
+        blue_boost = 1.2 if 'night' in condition else 1.05
+        red_reduce = 0.8 if 'night' in condition else 0.95
+        
+        img_array[:, :, 2] = np.clip(img_array[:, :, 2] * blue_boost, 0, 255) # Blue
+        img_array[:, :, 0] = np.clip(img_array[:, :, 0] * red_reduce, 0, 255) # Red
+        result_pil = Image.fromarray(img_array.astype(np.uint8))
 
         return result_pil
 
@@ -266,6 +325,26 @@ def load_image(image_path, max_size=1280):
         ratio = max_size / max(w, h)
         new_size = (int(w * ratio), int(h * ratio))
         img = img.resize(new_size, Image.LANCZOS)
+
+    return img
+
+def load_image(image_path, max_size=1280):
+    """Load an image, optionally resizing if too large"""
+    img = Image.open(image_path).convert('RGB')
+
+    # Resize if too large (to fit in GPU memory)
+    w, h = img.size
+    if max(w, h) > max_size:
+        ratio = max_size / max(w, h)
+        new_size = (int(w * ratio), int(h * ratio))
+        img = img.resize(new_size, Image.LANCZOS)
+    
+    # Ensure dimensions are multiples of 4 (prevents GAN size mismatch)
+    w, h = img.size
+    new_w = (w // 4) * 4
+    new_h = (h // 4) * 4
+    if new_w != w or new_h != h:
+        img = img.resize((new_w, new_h), Image.LANCZOS)
 
     return img
 
